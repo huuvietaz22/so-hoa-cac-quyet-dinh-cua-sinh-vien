@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import customtkinter
 from tkinter import filedialog, messagebox
 import google.generativeai as genai
@@ -7,18 +6,15 @@ import os
 import threading
 import json
 import re
-
-# Cần cài đặt thư viện CTkListbox: pip install CTkListbox
 from CTkListbox import CTkListbox
 
-# Đặt API Key của bạn ở đây
 API_KEY = "AIzaSyAYgvAsQCU2zmRGo4xTYz_-2rxSzlHDIF4"
 
 # --- Hàm xử lý API (Đã cập nhật prompt) ---
 def get_image_text(image_path):
     """
     Sử dụng Google Gemini API để trích xuất văn bản từ hình ảnh.
-    Trả về một đối tượng JSON string chứa tên file gợi ý và nội dung văn bản.
+    Trả về một đối tượng JSON string chứa các thông tin cụ thể và nội dung văn bản.
     """
     try:
         if not API_KEY or "AIzaSy" not in API_KEY:
@@ -32,17 +28,27 @@ def get_image_text(image_path):
         model = genai.GenerativeModel("gemini-2.5-flash")
         img = Image.open(image_path)
 
-        # Cập nhật prompt để yêu cầu trích xuất tên quyết định và tên sinh viên
-        prompt = """Trích xuất toàn bộ văn bản có trong hình ảnh này. Đồng thời, tìm và trích xuất "tên quyết định" và "tên sinh viên" từ nội dung.
-Chỉ trả về một đối tượng JSON duy nhất có ba khóa:
-1. "ten_quyet_dinh": tên của quyết định (ví dụ: "Quyet_dinh_tot_nghiep" hoặc "Quyet_dinh_khac"). Không có đuôi file và không có ký tự đặc biệt.
-2. "ten_sinh_vien": tên của sinh viên (ví dụ: "Nguyen_Van_A" hoặc "Tran_Thi_B"). Không có đuôi file và không có ký tự đặc biệt.
-3. "content": toàn bộ nội dung văn bản đã trích xuất, giữ nguyên định dạng, bao gồm cả các dấu ngắt dòng và cấu trúc.
+        # Cập nhật prompt để yêu cầu trích xuất các thông tin chi tiết
+        prompt = """Trích xuất toàn bộ văn bản có trong hình ảnh. Đồng thời, tìm và trích xuất các thông tin sau từ nội dung:
+- Họ tên của sinh viên.
+- Tên đầy đủ của quyết định (ví dụ: "QUYẾT ĐỊNH VỀ VIỆC CHUYỂN NGÀNH HỌC").
+- Tên của người ký quyết định.
+- Một danh sách các điều, khoản hoặc quyết định cụ thể được liệt kê trong văn bản.
+
+Chỉ trả về một đối tượng JSON duy nhất với các khóa sau:
+1. "ho_ten_sinh_vien": Họ tên của sinh viên, không dấu, không khoảng trắng, ví dụ: "Nguyen_Van_A".
+2. "ten_quyet_dinh": Tên đầy đủ của quyết định, không dấu, không khoảng trắng, ví dụ: "QUYET_DINH_CHUYEN_NGANH_HOC".
+3. "nguoi_ki": Tên của người ký quyết định, không dấu, không khoảng trắng, ví dụ: "Tran_Van_B".
+4. "cac_quyet_dinh": Một mảng các chuỗi, mỗi chuỗi là một điều, khoản hoặc quyết định cụ thể (ví dụ: ["Điều 1: Nay cho phép sinh viên...", "Điều 2: Quyết định có hiệu lực..."]).
+5. "content": Toàn bộ nội dung văn bản đã trích xuất, giữ nguyên định dạng ban đầu.
+
 Ví dụ:
 {
-  "ten_quyet_dinh": "Quyet_dinh_tot_nghiep",
-  "ten_sinh_vien": "Nguyen_Van_A",
-  "content": "Đây là nội dung văn bản..."
+  "ho_ten_sinh_vien": "Nguyen_Van_A",
+  "ten_quyet_dinh": "QUYET_DINH_TOT_NGHIEP",
+  "nguoi_ki": "Tran_Van_B",
+  "cac_quyet_dinh": ["Điều 1: ...", "Điều 2: ..."],
+  "content": "Đây là toàn bộ nội dung văn bản..."
 }"""
 
         response = model.generate_content([prompt, img])
@@ -84,7 +90,7 @@ class App(customtkinter.CTk):
             main_frame,
             text="TRÌNH TRÍCH XUẤT VĂN BẢN VÀ TÌM KIẾM",
             font=("Arial", 32, "bold"),
-            text_color="#4CAF50" # xanh lá cây
+            text_color="#4CAF50"
         )
         title_label.grid(row=0, column=0, columnspan=2, pady=(20, 5), sticky="n")
 
@@ -123,7 +129,7 @@ class App(customtkinter.CTk):
         # Nút bắt đầu và thanh tiến trình
         self.start_button = customtkinter.CTkButton(
             left_frame,
-            text="🚀 BẮT ĐẦU TRÍCH XUẤT",
+            text="� BẮT ĐẦU TRÍCH XUẤT",
             font=("Arial", 18, "bold"),
             height=55,
             fg_color="#4CAF50",
@@ -225,30 +231,45 @@ class App(customtkinter.CTk):
             if result:
                 try:
                     data = json.loads(result)
+                    
+                    # Lấy các thông tin mới từ phản hồi JSON
                     ten_quyet_dinh = data.get("ten_quyet_dinh", "khong_xac_dinh")
-                    ten_sinh_vien = data.get("ten_sinh_vien", "khong_xac_dinh")
+                    ho_ten_sinh_vien = data.get("ho_ten_sinh_vien", "khong_xac_dinh")
+                    cac_quyet_dinh = data.get("cac_quyet_dinh", [])
+                    nguoi_ki = data.get("nguoi_ki", "khong_xac_dinh")
                     content = data.get("content", "")
 
                     # Tạo tên file mới từ hai thông tin đã trích xuất
-                    safe_ten_quyet_dinh = "".join(c for c in ten_quyet_dinh if c.isalnum() or c in (" ", "_")).strip().replace(" ", "_")
-                    safe_ten_sinh_vien = "".join(c for c in ten_sinh_vien if c.isalnum() or c in (" ", "_")).strip().replace(" ", "_")
-                    
+                    safe_ten_quyet_dinh = "".join(c for c in ten_quyet_dinh if c.isalnum() or c in ("_",)).strip().replace(" ", "_")
+                    safe_ho_ten_sinh_vien = "".join(c for c in ho_ten_sinh_vien if c.isalnum() or c in ("_",)).strip().replace(" ", "_")
+
                     # Kết hợp hai tên lại, sử dụng một tên mặc định nếu không tìm thấy
-                    if safe_ten_quyet_dinh == "khong_xac_dinh" and safe_ten_sinh_vien == "khong_xac_dinh":
+                    if safe_ten_quyet_dinh == "khong_xac_dinh" and safe_ho_ten_sinh_vien == "khong_xac_dinh":
                         final_filename = "extracted_text"
                     else:
-                        final_filename = f"{safe_ten_quyet_dinh}_{safe_ten_sinh_vien}"
+                        final_filename = f"{safe_ten_quyet_dinh}_{safe_ho_ten_sinh_vien}"
                         if final_filename.startswith("_"):
                             final_filename = final_filename[1:]
                         if final_filename.endswith("_"):
                             final_filename = final_filename[:-1]
 
                     file_path = os.path.join(output_folder, f"{final_filename}.txt")
+                    
+                    # Tạo nội dung hiển thị chi tiết cho người dùng
+                    display_content = f"--- THÔNG TIN TRÍCH XUẤT ---\n"
+                    display_content += f"Họ Tên Sinh Viên: {ho_ten_sinh_vien}\n"
+                    display_content += f"Tên Quyết Định: {ten_quyet_dinh}\n"
+                    display_content += f"Người Ký: {nguoi_ki}\n"
+                    display_content += "Các Quyết Định:\n"
+                    for qd in cac_quyet_dinh:
+                        display_content += f"  - {qd}\n"
+                    display_content += "\n--- TOÀN BỘ NỘI DUNG ---\n"
+                    display_content += content
 
                     with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(content)
+                        f.write(display_content)
 
-                    self.after(0, lambda: self.finish_processing(file_path, content))
+                    self.after(0, lambda: self.finish_processing(file_path, display_content))
                 except json.JSONDecodeError as e:
                     self.after(0, lambda: self.handle_error(f"Lỗi: Phản hồi API không phải là JSON hợp lệ. Chi tiết: {e}"))
             else:
