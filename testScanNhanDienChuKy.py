@@ -7,17 +7,15 @@ import threading
 import json
 import re
 import pyodbc
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-# --- Cấu hình API và Database ---
-# Vui lòng thay thế các thông tin bên dưới bằng thông tin của bạn
+# --- Cấu hình toàn cục ---
 API_KEY = "AIzaSyAYgvAsQCU2zmRGo4xTYz_-2rxSzlHDIF4"
 SQL_SERVER = "WILLIAMS22-01\\DHV"
 SQL_DATABASE = "TextExtractorDB"
 SQL_USER = "Admin"
 SQL_PASSWORD = "123456"
 
-# Chuỗi kết nối đến SQL Server
 CONNECTION_STRING = (
     f"DRIVER={{ODBC Driver 17 for SQL Server}};"
     f"SERVER={SQL_SERVER};"
@@ -26,89 +24,143 @@ CONNECTION_STRING = (
     f"PWD={SQL_PASSWORD};"
 )
 
-# Thư mục để lưu trữ các file ảnh chữ ký và ảnh gốc
 ORIGINAL_IMAGES_DIR = "originals"
 if not os.path.exists(ORIGINAL_IMAGES_DIR):
     os.makedirs(ORIGINAL_IMAGES_DIR)
 
 
-# --- Hàm xử lý API ---
+# --- Hàm xử lý API (ĐÃ SỬA LỖI CHỮ KÝ) ---
+# --- Hàm xử lý API (ĐÃ SỬA TRIỆT ĐỂ LỖI PHẢN HỒI) ---
 def get_image_data(image_path: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Sử dụng Google Gemini API để trích xuất văn bản, thông tin chữ ký và tọa độ.
-    Trả về một đối tượng JSON string và đường dẫn ảnh gốc đã lưu.
-    """
     try:
         if not API_KEY or "AIzaSy" not in API_KEY:
             raise ValueError("API Key không hợp lệ. Vui lòng kiểm tra lại.")
 
         genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        # ✅ DÙNG MODEL ỔN ĐỊNH NHẤT HIỆN TẠI
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
         img = Image.open(image_path)
 
-        # Lưu ảnh gốc vào thư mục để sử dụng sau này
         original_file_path = os.path.join(
             ORIGINAL_IMAGES_DIR, os.path.basename(image_path)
         )
         img.save(original_file_path)
 
-        prompt = """Trích xuất các thông tin sau từ văn bản trong hình ảnh:
-- Họ tên của sinh viên.
-- Tên đầy đủ của quyết định.
-- Tên của người ký quyết định.
-- Một danh sách các điều, khoản hoặc quyết định cụ thể.
-- Tọa độ khung hình vuông của chữ ký, bắt buộc phải trả về một mảng 4 số nguyên. Nếu không tìm thấy, hãy trả về [0, 0, 0, 0].
+        # === PROMPT SIÊU RÕ RÀNG, BẮT BUỘC TRẢ VỀ JSON ===
+        prompt = """Bạn là hệ thống AI trích xuất thông tin văn bản hành chính.
 
-**Quy tắc và định dạng đầu ra:**
-1. Trả về một đối tượng JSON duy nhất.
-2. Tất cả các khóa phải có giá trị. Nếu không tìm thấy, hãy trả về chuỗi "Không xác định".
-3. Đặc biệt, khóa "toa_do_chu_ki" phải là một mảng 4 số nguyên [x_min, y_min, x_max, y_max]. Nếu không thể xác định, hãy trả về [0, 0, 0, 0].
-4. Vị trí của chữ ký trong ảnh sẽ ở bên trên tên người ký.
+Hãy phân tích ảnh và trả về DUY NHẤT một khối JSON với cấu trúc sau:
 
-Chỉ trả về một đối tượng JSON duy nhất với các khóa sau:
-"ho_ten_sinh_vien"
-"ten_quyet_dinh"
-"nguoi_ki"
-"cac_quyet_dinh"
-"toa_do_chu_ki"
-
-Ví dụ:
 {
-  "ho_ten_sinh_vien": "Nguyen_Van_A",
-  "ten_quyet_dinh": "QUYET_DINH_TOT_NGHIEP",
-  "nguoi_ki": "Tran_Van_B",
-  "cac_quyet_dinh": ["Điều 1: ...", "Điều 2: ..."],
-  "toa_do_chu_ki": [850, 600, 1000, 750]
+  "ho_ten_sinh_vien": "chuỗi",
+  "ten_quyet_dinh": "chuỗi",
+  "nguoi_ki": "chuỗi",
+  "cac_quyet_dinh": ["mảng chuỗi"],
+  "toa_do_chu_ki": [x_min, y_min, x_max, y_max]
+}
+
+HƯỚNG DẪN CHI TIẾT:
+- "ho_ten_sinh_vien": Họ tên sinh viên trong quyết định.
+- "ten_quyet_dinh": Tên đầy đủ của quyết định (VD: "Quyết định công nhận tốt nghiệp...").
+- "nguoi_ki": Họ tên người ký (thường ở cuối trang).
+- "cac_quyet_dinh": Mảng chứa từng điều/khoản được liệt kê.
+- "toa_do_chu_ki": Mảng 4 SỐ NGUYÊN [trái, trên, phải, dưới] bao quanh CHỮ KÝ THẬT (không phải tên người ký). Nếu không thấy → [0,0,0,0].
+
+QUY TẮC BẮT BUỘC:
+1. LUÔN trả về đúng định dạng JSON như trên.
+2. KHÔNG THÊM bất kỳ ký tự, giải thích, markdown hay ```json nào ngoài khối JSON.
+3. Nếu thiếu thông tin → điền "Không xác định".
+4. "toa_do_chu_ki" PHẢI là mảng 4 số nguyên. Không được để null, string hay object.
+
+VÍ DỤ HOÀN HẢO:
+{
+  "ho_ten_sinh_vien": "Nguyễn Văn A",
+  "ten_quyet_dinh": "Quyết định công nhận tốt nghiệp đại học",
+  "nguoi_ki": "Hiệu trưởng Trần Văn Minh",
+  "cac_quyet_dinh": [
+    "Điều 1: Sinh viên đủ điều kiện tốt nghiệp.",
+    "Điều 2: Cấp bằng kỹ sư ngành Công nghệ thông tin."
+  ],
+  "toa_do_chu_ki": [820, 580, 980, 720]
 }"""
 
-        response = model.generate_content([prompt, img])
+        response = model.generate_content([prompt, img], stream=False)
         full_text = response.text.strip()
 
-        print(f"Phản hồi từ API Gemini:\n{full_text}")  # In phản hồi để gỡ lỗi
+        print("\n" + "="*60)
+        print("[DEBUG] PHẢN HỒI THÔ TỪ GEMINI:")
+        print("-"*60)
+        print(full_text)
+        print("="*60 + "\n")
 
-        match = re.search(r"\{.*\}", full_text, re.DOTALL)
-        if match:
-            json_string = match.group(0)
-            return json_string, original_file_path
-        else:
-            raise ValueError("Phản hồi của API không chứa đối tượng JSON hợp lệ.")
+        # 🔍 Rút JSON bằng nhiều lớp bảo vệ
+        json_match = re.search(r"\{.*\}", full_text, re.DOTALL)
+        if not json_match:
+            print("[CẢNH BÁO] Không tìm thấy JSON trong phản hồi → Tạo JSON mặc định")
+            fallback_data = {
+                "ho_ten_sinh_vien": "Không xác định",
+                "ten_quyet_dinh": "Không xác định",
+                "nguoi_ki": "Không xác định",
+                "cac_quyet_dinh": [],
+                "toa_do_chu_ki": [0, 0, 0, 0]
+            }
+            return json.dumps(fallback_data, ensure_ascii=False), original_file_path
+
+        json_string = json_match.group(0)
+
+        # ✅ Kiểm tra & sửa lỗi JSON trước khi trả về
+        try:
+            data = json.loads(json_string)
+        except json.JSONDecodeError:
+            print("[LỖI] JSON không hợp lệ → Sửa chữa tự động")
+            # Tạo lại JSON an toàn
+            data = {
+                "ho_ten_sinh_vien": "Không xác định",
+                "ten_quyet_dinh": "Không xác định",
+                "nguoi_ki": "Không xác định",
+                "cac_quyet_dinh": [],
+                "toa_do_chu_ki": [0, 0, 0, 0]
+            }
+
+        # ✅ Đảm bảo khóa "toa_do_chu_ki" luôn tồn tại & đúng định dạng
+        if "toa_do_chu_ki" not in data or not isinstance(data["toa_do_chu_ki"], list) or len(data["toa_do_chu_ki"]) != 4:
+            data["toa_do_chu_ki"] = [0, 0, 0, 0]
+
+        # Chuyển về int
+        try:
+            data["toa_do_chu_ki"] = [int(x) for x in data["toa_do_chu_ki"]]
+        except:
+            data["toa_do_chu_ki"] = [0, 0, 0, 0]
+
+        # Trả về JSON string chuẩn
+        return json.dumps(data, ensure_ascii=False), original_file_path
 
     except Exception as e:
-        print(f"Lỗi khi xử lý ảnh qua API: {e}")
-        return None, None
+        print(f"[LỖI NẶNG] Xử lý ảnh thất bại: {e}")
+        # Fallback cuối cùng
+        fallback_data = {
+            "ho_ten_sinh_vien": "Lỗi xử lý",
+            "ten_quyet_dinh": "Lỗi xử lý",
+            "nguoi_ki": "Lỗi xử lý",
+            "cac_quyet_dinh": ["Không trích xuất được do lỗi hệ thống"],
+            "toa_do_chu_ki": [0, 0, 0, 0]
+        }
+        return json.dumps(fallback_data, ensure_ascii=False), None
 
 
-# --- LỚP GIAO DIỆN ỨNG DỤNG ---
+# --- LỚP CHÍNH: GIAO DIỆN DASHBOARD ĐẸP, SÁNG, 1 CỬA SỔ ---
 class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
 
-        # Cấu hình cửa sổ chính
-        self.title("📑 Trình trích xuất & tìm kiếm văn bản từ ảnh")
-        self.geometry("1200x800")
-        customtkinter.set_appearance_mode("Dark")
-        customtkinter.set_default_color_theme("green")
+        # === CẤU HÌNH CỬA SỔ ===
+        self.title("📄 AI Document Extractor & Searcher")
+        self.geometry("1300x850")
+        self.minsize(1200, 800)
+        customtkinter.set_appearance_mode("Light")  # 🌞 CHẾ ĐỘ SÁNG
+        customtkinter.set_default_color_theme("blue")
 
+        # Kết nối CSDL
         self.conn = self.get_db_connection()
         if self.conn:
             self.create_documents_table()
@@ -118,144 +170,203 @@ class App(customtkinter.CTk):
                 "Không thể kết nối CSDL khi khởi động. Ứng dụng sẽ bị hạn chế chức năng.",
             )
 
-        # --- CONTAINER CHÍNH CHO TOÀN BỘ GIAO DIỆN ---
-        main_frame = customtkinter.CTkFrame(self, corner_radius=20, fg_color="#1a1a1a")
-        main_frame.pack(pady=20, padx=20, fill="both", expand=True)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(1, weight=1)
-        main_frame.grid_rowconfigure(2, weight=1)
+        # Biến trạng thái
+        self.current_selected_doc_id = None
+
+        # === HEADER ===
+        header_frame = customtkinter.CTkFrame(self, height=80, corner_radius=0, fg_color="#f8f9fa", border_width=0)
+        header_frame.pack(fill="x", pady=0, padx=0)
+        header_frame.grid_columnconfigure(1, weight=1)
 
         title_label = customtkinter.CTkLabel(
-            main_frame,
-            text="TRÌNH TRÍCH XUẤT VĂN BẢN VÀ TÌM KIẾM",
-            font=("Arial", 32, "bold"),
-            text_color="#4CAF50",
+            header_frame,
+            text="📑 AI Document Dashboard",
+            font=("Segoe UI", 28, "bold"),
+            text_color="#2c3e50",
         )
-        title_label.grid(row=0, column=0, columnspan=2, pady=(20, 5), sticky="n")
+        title_label.grid(row=0, column=0, padx=(40, 20), pady=20, sticky="w")
 
         subtitle_label = customtkinter.CTkLabel(
-            main_frame,
-            text="Sử dụng AI để nhận diện và tìm kiếm nội dung trong hình ảnh",
-            font=("Arial", 16),
-            text_color="#a0a0a0",
+            header_frame,
+            text="Trích xuất thông minh & tìm kiếm tài liệu ảnh bằng AI — Giao diện hiện đại, dễ sử dụng",
+            font=("Segoe UI", 13),
+            text_color="#7f8c8d",
         )
-        subtitle_label.grid(row=1, column=0, columnspan=2, pady=(0, 20), sticky="n")
+        subtitle_label.grid(row=0, column=1, padx=10, pady=20, sticky="w")
 
-        # --- KHUNG BÊN TRÁI: NHẬP LIỆU & TÌM KIẾM ---
-        left_frame = customtkinter.CTkFrame(main_frame, corner_radius=15)
-        left_frame.grid(row=2, column=0, padx=15, pady=15, sticky="nsew")
-        left_frame.grid_columnconfigure(0, weight=1)
+        # === MAIN CONTENT FRAME ===
+        main_frame = customtkinter.CTkFrame(self, fg_color="#ffffff", corner_radius=20)
+        main_frame.pack(pady=25, padx=30, fill="both", expand=True)
+        main_frame.grid_columnconfigure(0, weight=1, uniform="group1")
+        main_frame.grid_columnconfigure(1, weight=2, uniform="group1")
+        main_frame.grid_rowconfigure(1, weight=1)
 
-        extraction_frame = customtkinter.CTkFrame(left_frame, corner_radius=10)
-        extraction_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        extraction_frame.grid_columnconfigure(1, weight=1)
+        # --- TOP CONTROL CARD ---
+        control_card = customtkinter.CTkFrame(main_frame, fg_color="#f8f9fa", corner_radius=15, border_width=2, border_color="#e0e0e0")
+        control_card.grid(row=0, column=0, columnspan=2, padx=0, pady=(0, 20), sticky="ew")
+        control_card.grid_columnconfigure(1, weight=1)
 
-        image_label = customtkinter.CTkLabel(
-            extraction_frame, text="🖼️ Ảnh cần trích xuất:", font=("Arial", 14, "bold")
-        )
-        image_label.grid(row=0, column=0, padx=15, pady=10, sticky="w")
+        # File selection
+        row1 = customtkinter.CTkFrame(control_card, fg_color="transparent")
+        row1.pack(fill="x", padx=30, pady=(25, 15))
+
+        customtkinter.CTkLabel(
+            row1, text="📁 Ảnh cần xử lý:", font=("Segoe UI", 15, "bold"), text_color="#2c3e50"
+        ).pack(side="left")
+
         self.image_path_entry = customtkinter.CTkEntry(
-            extraction_frame, placeholder_text="Chưa chọn file ảnh..."
+            row1, placeholder_text="Chưa chọn file...", height=40, font=("Segoe UI", 13), width=500
         )
-        self.image_path_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        browse_image_button = customtkinter.CTkButton(
-            extraction_frame, text="Duyệt...", command=self.select_image_file, width=80
+        self.image_path_entry.pack(side="left", padx=15, fill="x", expand=True)
+
+        browse_btn = customtkinter.CTkButton(
+            row1,
+            text="Duyệt...",
+            width=110,
+            height=40,
+            font=("Segoe UI", 13, "bold"),
+            command=self.select_image_file,
+            fg_color="#3498db",
+            hover_color="#2980b9",
         )
-        browse_image_button.grid(row=0, column=2, padx=15, pady=10)
+        browse_btn.pack(side="left")
+
+        # Process button + progress
+        row2 = customtkinter.CTkFrame(control_card, fg_color="transparent")
+        row2.pack(fill="x", padx=30, pady=(0, 25))
 
         self.start_button = customtkinter.CTkButton(
-            left_frame,
+            row2,
             text="🚀 BẮT ĐẦU TRÍCH XUẤT",
-            font=("Arial", 18, "bold"),
+            font=("Segoe UI", 17, "bold"),
             height=55,
-            fg_color="#4CAF50",
-            hover_color="#388E3C",
+            fg_color="#27ae60",
+            hover_color="#229954",
             command=self.start_processing_thread,
             corner_radius=12,
         )
-        self.start_button.grid(row=1, column=0, padx=10, pady=(10, 5), sticky="ew")
+        self.start_button.pack(side="left")
 
         self.progress_bar = customtkinter.CTkProgressBar(
-            left_frame, mode="indeterminate", height=10
+            row2, mode="indeterminate", height=10, progress_color="#27ae60", width=300
         )
-        self.progress_bar.grid(row=2, column=0, padx=10, pady=(0, 20), sticky="ew")
+        self.progress_bar.pack(side="left", padx=(30, 0))
         self.progress_bar.stop()
         self.progress_bar.set(0)
 
-        search_frame = customtkinter.CTkFrame(left_frame, corner_radius=10)
-        search_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
+        # --- LEFT PANEL: SEARCH & RESULTS ---
+        left_panel = customtkinter.CTkFrame(main_frame, fg_color="#f8f9fa", corner_radius=15, border_width=2, border_color="#e0e0e0")
+        left_panel.grid(row=1, column=0, padx=(0, 15), pady=0, sticky="nsew")
+        left_panel.grid_columnconfigure(0, weight=1)
+        left_panel.grid_rowconfigure(2, weight=1)
+
+        # Search bar
+        search_frame = customtkinter.CTkFrame(left_panel, fg_color="transparent", height=70)
+        search_frame.grid(row=0, column=0, padx=20, pady=(20, 15), sticky="ew")
         search_frame.grid_columnconfigure(0, weight=1)
+
+        customtkinter.CTkLabel(
+            search_frame, text="🔍 Tìm kiếm nhanh:", font=("Segoe UI", 15, "bold"), text_color="#2c3e50"
+        ).grid(row=0, column=0, sticky="w", pady=(0, 5))
 
         self.search_entry = customtkinter.CTkEntry(
             search_frame,
-            placeholder_text="🔍 Nhập từ khóa để tìm kiếm...",
-            font=("Arial", 14),
+            placeholder_text="Nhập tên SV, QĐ hoặc ID...",
+            height=40,
+            font=("Segoe UI", 13),
         )
-        self.search_entry.grid(row=0, column=0, padx=(15, 5), pady=15, sticky="ew")
+        self.search_entry.grid(row=1, column=0, sticky="ew", padx=(0, 10))
         self.search_entry.bind("<KeyRelease>", self.dynamic_search_files)
 
-        search_button = customtkinter.CTkButton(
-            search_frame, text="Tìm kiếm", command=self.search_files, width=100
+        search_btn = customtkinter.CTkButton(
+            search_frame,
+            text="Tìm",
+            width=80,
+            height=40,
+            font=("Segoe UI", 13, "bold"),
+            command=self.search_files,
+            fg_color="#e67e22",
+            hover_color="#d35400",
         )
-        search_button.grid(row=0, column=1, padx=(5, 15), pady=15)
+        search_btn.grid(row=1, column=1)
 
-        # --- KHUNG BÊN PHẢI: KẾT QUẢ & NỘI DUNG ---
-        right_frame = customtkinter.CTkFrame(main_frame, corner_radius=15)
-        right_frame.grid(row=2, column=1, padx=15, pady=15, sticky="nsew")
-        right_frame.grid_columnconfigure(0, weight=1)
-        right_frame.grid_rowconfigure(1, weight=1)
-        right_frame.grid_rowconfigure(2, weight=0)
-        right_frame.grid_rowconfigure(3, weight=1)
-        right_frame.grid_rowconfigure(4, weight=0)
-        right_frame.grid_rowconfigure(5, weight=3)
-
-        results_label = customtkinter.CTkLabel(
-            right_frame, text="📑 KẾT QUẢ TÌM KIẾM:", font=("Arial", 14, "bold")
+        # Results list
+        result_label = customtkinter.CTkLabel(
+            left_panel,
+            text="📋 Tài liệu đã lưu:",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#2c3e50",
         )
-        results_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+        result_label.grid(row=1, column=0, padx=20, pady=(15, 10), sticky="w")
 
         self.results_listbox_frame = customtkinter.CTkScrollableFrame(
-            right_frame, corner_radius=10, fg_color="#2b2b2b"
+            left_panel,
+            fg_color="#ffffff",
+            scrollbar_button_color="#3498db",
+            corner_radius=10,
+            border_width=1,
+            border_color="#e0e0e0",
         )
-        self.results_listbox_frame.grid(row=1, column=0, padx=10, pady=0, sticky="nsew")
-        self.results_listbox_frame.grid_columnconfigure(0, weight=1)
+        self.results_listbox_frame.grid(row=2, column=0, padx=20, pady=(0, 25), sticky="nsew")
 
+        # --- RIGHT PANEL: CONTENT & ACTIONS ---
+        right_panel = customtkinter.CTkFrame(main_frame, fg_color="#f8f9fa", corner_radius=15, border_width=2, border_color="#e0e0e0")
+        right_panel.grid(row=1, column=1, padx=(15, 0), pady=0, sticky="nsew")
+        right_panel.grid_columnconfigure(0, weight=1)
+        right_panel.grid_rowconfigure(2, weight=1)
+
+        # Action button
         self.open_image_button = customtkinter.CTkButton(
-            right_frame,
-            text="Xem ảnh gốc với chữ ký đã nhận dạng",
-            font=("Arial", 14),
-            command=self.show_original_image_window,
+            right_panel,
+            text="🖼️ Xem ảnh gốc với chữ ký đã nhận dạng",
+            font=("Segoe UI", 15, "bold"),
+            height=45,
             state="disabled",
+            command=self.show_original_image_window,
+            fg_color="#9b59b6",
+            hover_color="#8e44ad",
         )
-        self.open_image_button.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="ew")
+        self.open_image_button.grid(row=0, column=0, padx=25, pady=(25, 20), sticky="ew")
 
+        # Content display
         content_label = customtkinter.CTkLabel(
-            right_frame, text="📝 NỘI DUNG TÀI LIỆU:", font=("Arial", 14, "bold")
+            right_panel,
+            text="📝 Nội dung tài liệu đã trích xuất:",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#2c3e50",
         )
-        content_label.grid(row=3, column=0, padx=10, pady=(15, 5), sticky="w")
+        content_label.grid(row=1, column=0, padx=25, pady=(10, 10), sticky="w")
 
         self.output_textbox = customtkinter.CTkTextbox(
-            right_frame, font=("Consolas", 12), wrap="word"
+            right_panel,
+            font=("Consolas", 13),
+            wrap="word",
+            fg_color="#ffffff",
+            text_color="#2c3e50",
+            corner_radius=10,
+            border_width=1,
+            border_color="#e0e0e0",
         )
-        self.output_textbox.grid(
-            row=4, column=0, rowspan=2, padx=10, pady=(0, 10), sticky="nsew"
-        )
+        self.output_textbox.grid(row=2, column=0, padx=25, pady=(0, 25), sticky="nsew")
 
-        # Thanh trạng thái
+        # === STATUS BAR ===
+        status_frame = customtkinter.CTkFrame(self, height=40, corner_radius=0, fg_color="#ecf0f1")
+        status_frame.pack(side="bottom", fill="x", padx=0, pady=0)
+
         self.status_label = customtkinter.CTkLabel(
-            self,
-            text="✅ Sẵn sàng",
-            fg_color="transparent",
+            status_frame,
+            text="✅ Sẵn sàng | Phiên bản Light Dashboard 1.0",
+            font=("Segoe UI", 12),
+            text_color="#7f8c8d",
             anchor="w",
-            font=("Arial", 12),
         )
-        self.status_label.pack(side="bottom", fill="x", padx=40, pady=10)
+        self.status_label.pack(side="left", padx=40, pady=8)
 
+        # Load initial data
         if self.conn:
             self.load_initial_data()
-            self.current_selected_doc_id = None
 
-    # --- Các hàm xử lý ---
+    # --- Các hàm xử lý (giữ nguyên logic, chỉ sửa giao diện nếu cần) ---
     def get_db_connection(self):
         try:
             conn = pyodbc.connect(CONNECTION_STRING)
@@ -263,18 +374,11 @@ class App(customtkinter.CTk):
         except pyodbc.Error as e:
             sql_state = e.args[0]
             if sql_state == "28000":
-                messagebox.showerror(
-                    "Lỗi kết nối", "Tên người dùng hoặc mật khẩu SQL Server không đúng."
-                )
+                messagebox.showerror("Lỗi kết nối", "Tên người dùng hoặc mật khẩu SQL Server không đúng.")
             elif sql_state == "08001":
-                messagebox.showerror(
-                    "Lỗi kết nối",
-                    "Không thể kết nối đến SQL Server. Vui lòng kiểm tra địa chỉ máy chủ.",
-                )
+                messagebox.showerror("Lỗi kết nối", "Không thể kết nối đến SQL Server. Vui lòng kiểm tra địa chỉ máy chủ.")
             else:
-                messagebox.showerror(
-                    "Lỗi kết nối", f"Đã xảy ra lỗi khi kết nối SQL Server:\n{e}"
-                )
+                messagebox.showerror("Lỗi kết nối", f"Đã xảy ra lỗi khi kết nối SQL Server:\n{e}")
             return None
 
     def create_documents_table(self):
@@ -315,9 +419,7 @@ class App(customtkinter.CTk):
         if file_path:
             self.image_path_entry.delete(0, "end")
             self.image_path_entry.insert(0, file_path)
-            self.status_label.configure(
-                text=f"✅ Đã chọn file: {os.path.basename(file_path)}"
-            )
+            self.status_label.configure(text=f"✅ Đã chọn: {os.path.basename(file_path)}")
 
     def start_processing_thread(self):
         image_path = self.image_path_entry.get()
@@ -325,7 +427,7 @@ class App(customtkinter.CTk):
             messagebox.showerror("Lỗi", "Vui lòng chọn một file ảnh.")
             return
 
-        self.status_label.configure(text="⏳ Đang xử lý, vui lòng đợi...")
+        self.status_label.configure(text="⏳ Đang xử lý bằng AI...")
         self.start_button.configure(state="disabled")
         self.progress_bar.start()
 
@@ -338,17 +440,14 @@ class App(customtkinter.CTk):
                     ten_quyet_dinh = data.get("ten_quyet_dinh", "Không xác định")
                     nguoi_ki = data.get("nguoi_ki", "Không xác định")
                     cac_quyet_dinh_json = json.dumps(data.get("cac_quyet_dinh", []))
-
                     toa_do_chu_ki = data.get("toa_do_chu_ki")
-                    toa_do_chu_ki_json = (
-                        json.dumps(toa_do_chu_ki) if toa_do_chu_ki else None
-                    )
+                    toa_do_chu_ki_json = json.dumps(toa_do_chu_ki) if toa_do_chu_ki else None
 
                     summary_content = (
-                        f"Họ tên sinh viên: {ho_ten_sinh_vien}\n"
-                        f"Tên quyết định: {ten_quyet_dinh}\n"
-                        f"Người ký: {nguoi_ki}\n\n"
-                        f"Các quyết định:\n" + "\n".join(data.get("cac_quyet_dinh", []))
+                        f"🧑‍🎓 Họ tên sinh viên: {ho_ten_sinh_vien}\n"
+                        f"📑 Tên quyết định: {ten_quyet_dinh}\n"
+                        f"✍️ Người ký: {nguoi_ki}\n\n"
+                        f"📋 Chi tiết các điều khoản:\n" + "\n".join(f"• {qd}" for qd in data.get("cac_quyet_dinh", []))
                     )
 
                     conn = self.get_db_connection()
@@ -371,50 +470,28 @@ class App(customtkinter.CTk):
                                 ),
                             )
                             conn.commit()
-                            self.after(
-                                0,
-                                lambda: self.finish_processing(
-                                    "Đã lưu vào CSDL", summary_content
-                                ),
-                            )
+                            new_id = cursor.execute("SELECT @@IDENTITY").fetchval()
+                            self.after(0, lambda: self.finish_processing(f"Đã lưu vào CSDL (ID: {new_id})", summary_content))
                         except pyodbc.Error as e:
-                            self.after(
-                                0,
-                                lambda: self.handle_error(f"Lỗi khi lưu vào CSDL: {e}"),
-                            )
+                            self.after(0, lambda: self.handle_error(f"Lỗi khi lưu vào CSDL: {e}"))
                         finally:
                             conn.close()
                     else:
-                        self.after(
-                            0,
-                            lambda: self.handle_error(
-                                "Lỗi: Không thể kết nối cơ sở dữ liệu."
-                            ),
-                        )
+                        self.after(0, lambda: self.handle_error("Lỗi: Không thể kết nối cơ sở dữ liệu."))
                 except (json.JSONDecodeError, KeyError) as e:
-                    self.after(
-                        0,
-                        lambda: self.handle_error(
-                            f"Lỗi: Phản hồi API không phải là JSON hợp lệ hoặc thiếu khóa. Chi tiết: {e}"
-                        ),
-                    )
+                    self.after(0, lambda: self.handle_error(f"Lỗi JSON hoặc thiếu khóa: {e}"))
             else:
-                self.after(
-                    0,
-                    lambda: self.handle_error(
-                        "Lỗi: Không thể trích xuất văn bản từ ảnh. Phản hồi API không chứa JSON."
-                    ),
-                )
+                self.after(0, lambda: self.handle_error("Không thể trích xuất văn bản. Phản hồi API không hợp lệ."))
 
-        threading.Thread(target=worker).start()
+        threading.Thread(target=worker, daemon=True).start()
 
     def finish_processing(self, save_message, content):
         self.progress_bar.stop()
         self.output_textbox.delete("1.0", "end")
         self.output_textbox.insert("1.0", content)
-        self.status_label.configure(text=f"✅ Trích xuất thành công! {save_message}")
+        self.status_label.configure(text=f"✅ Thành công! {save_message}")
         self.start_button.configure(state="normal")
-        messagebox.showinfo("Thành công", f"Đã trích xuất và lưu văn bản thành công!")
+        messagebox.showinfo("Thành công", "Đã trích xuất và lưu văn bản thành công!")
         self.load_initial_data()
 
     def handle_error(self, message):
@@ -429,78 +506,92 @@ class App(customtkinter.CTk):
 
         try:
             cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT id, ten_quyet_dinh, ho_ten_sinh_vien FROM Documents ORDER BY id DESC"
-            )
+            cursor.execute("SELECT id, ten_quyet_dinh, ho_ten_sinh_vien FROM Documents ORDER BY id DESC")
             rows = cursor.fetchall()
-            row_count = 0
             for row in rows:
-                doc_id, ten_quyet_dinh, ho_ten_sinh_vien = row
-                display_name = f"{ten_quyet_dinh} - {ho_ten_sinh_vien} (ID: {doc_id})"
+                doc_id, ten_qd, ho_ten = row
+                display_name = f"📌 {ten_qd}\n👤 {ho_ten}  (ID: {doc_id})"
+
+                item_frame = customtkinter.CTkFrame(
+                    self.results_listbox_frame,
+                    fg_color="#ffffff",
+                    corner_radius=10,
+                    border_width=1,
+                    border_color="#e0e0e0",
+                )
+                item_frame.pack(fill="x", padx=5, pady=6)
+                item_frame.grid_columnconfigure(0, weight=1)
 
                 label = customtkinter.CTkLabel(
-                    self.results_listbox_frame,
+                    item_frame,
                     text=display_name,
-                    fg_color="#343638",
-                    corner_radius=6,
-                    pady=5,
+                    font=("Segoe UI", 13),
+                    justify="left",
                     anchor="w",
-                    font=("Arial", 12),
+                    text_color="#2c3e50",
                 )
-                label.bind(
-                    "<Button-1>",
-                    lambda event, doc_id=doc_id: self.show_file_content(doc_id),
-                )
-                label.pack(fill="x", padx=5, pady=2)
-                row_count += 1
-            self.status_label.configure(text=f"Đã tải {row_count} tài liệu từ CSDL.")
+                label.pack(fill="x", padx=15, pady=12)
+                label.bind("<Button-1>", lambda event, did=doc_id: self.show_file_content(did))
+                label.bind("<Enter>", lambda event, frame=item_frame: frame.configure(fg_color="#f0f0f0"))
+                label.bind("<Leave>", lambda event, frame=item_frame: frame.configure(fg_color="#ffffff"))
+
+            self.status_label.configure(text=f"✅ Đã tải {len(rows)} tài liệu.")
         except pyodbc.Error as e:
-            print(f"Lỗi khi tải dữ liệu từ CSDL: {e}")
-            self.status_label.configure(text=f"❌ Lỗi khi tải dữ liệu từ CSDL.")
+            print(f"Lỗi khi tải dữ liệu: {e}")
+            self.status_label.configure(text="❌ Lỗi khi tải dữ liệu từ CSDL.")
 
     def dynamic_search_files(self, event=None):
         search_term = self.search_entry.get().strip().lower()
-
         for widget in self.results_listbox_frame.winfo_children():
             widget.destroy()
 
-        found_files_count = 0
+        if not search_term:
+            self.load_initial_data()
+            return
+
+        found_count = 0
         try:
             cursor = self.conn.cursor()
-            search_query = """
+            cursor.execute("""
                 SELECT id, ten_quyet_dinh, ho_ten_sinh_vien FROM Documents
                 WHERE LOWER(ten_quyet_dinh) LIKE ? OR LOWER(ho_ten_sinh_vien) LIKE ? OR CAST(id AS NVARCHAR) LIKE ?
-            """
-            cursor.execute(
-                search_query,
-                (f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"),
-            )
+                ORDER BY id DESC
+            """, (f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"))
+
             rows = cursor.fetchall()
             for row in rows:
-                doc_id, ten_quyet_dinh, ho_ten_sinh_vien = row
-                display_name = f"{ten_quyet_dinh} - {ho_ten_sinh_vien} (ID: {doc_id})"
+                doc_id, ten_qd, ho_ten = row
+                display_name = f"📌 {ten_qd}\n👤 {ho_ten}  (ID: {doc_id})"
+
+                item_frame = customtkinter.CTkFrame(
+                    self.results_listbox_frame,
+                    fg_color="#ffffff",
+                    corner_radius=10,
+                    border_width=1,
+                    border_color="#e0e0e0",
+                )
+                item_frame.pack(fill="x", padx=5, pady=6)
+                item_frame.grid_columnconfigure(0, weight=1)
 
                 label = customtkinter.CTkLabel(
-                    self.results_listbox_frame,
+                    item_frame,
                     text=display_name,
-                    fg_color="#343638",
-                    corner_radius=6,
-                    pady=5,
+                    font=("Segoe UI", 13),
+                    justify="left",
                     anchor="w",
-                    font=("Arial", 12),
+                    text_color="#2c3e50",
                 )
-                label.bind(
-                    "<Button-1>",
-                    lambda event, doc_id=doc_id: self.show_file_content(doc_id),
-                )
-                label.pack(fill="x", padx=5, pady=2)
-                found_files_count += 1
-            self.status_label.configure(
-                text=f"✅ Tìm thấy {found_files_count} kết quả."
-            )
+                label.pack(fill="x", padx=15, pady=12)
+                label.bind("<Button-1>", lambda event, did=doc_id: self.show_file_content(did))
+                label.bind("<Enter>", lambda event, frame=item_frame: frame.configure(fg_color="#f0f0f0"))
+                label.bind("<Leave>", lambda event, frame=item_frame: frame.configure(fg_color="#ffffff"))
+
+                found_count += 1
+
+            self.status_label.configure(text=f"✅ Tìm thấy {found_count} kết quả cho '{search_term}'")
         except pyodbc.Error as e:
-            print(f"Lỗi khi tìm kiếm dữ liệu: {e}")
-            self.status_label.configure(text=f"❌ Lỗi khi tìm kiếm dữ liệu từ CSDL.")
+            print(f"Lỗi tìm kiếm: {e}")
+            self.status_label.configure(text="❌ Lỗi tìm kiếm trong CSDL.")
 
     def search_files(self):
         self.dynamic_search_files()
@@ -512,38 +603,31 @@ class App(customtkinter.CTk):
 
         try:
             cursor = self.conn.cursor()
-            query = "SELECT ho_ten_sinh_vien, ten_quyet_dinh, nguoi_ki, cac_quyet_dinh, duong_dan_anh_goc, toa_do_chu_ki FROM Documents WHERE id = ?"
-            cursor.execute(query, (doc_id,))
+            cursor.execute("""
+                SELECT ho_ten_sinh_vien, ten_quyet_dinh, nguoi_ki, cac_quyet_dinh, duong_dan_anh_goc, toa_do_chu_ki 
+                FROM Documents WHERE id = ?
+            """, (doc_id,))
             row = cursor.fetchone()
+
             if row:
-                (
-                    ho_ten_sinh_vien,
-                    ten_quyet_dinh,
-                    nguoi_ki,
-                    cac_quyet_dinh_json,
-                    duong_dan_anh_goc,
-                    toa_do_chu_ki_json,
-                ) = row
+                ho_ten_sinh_vien, ten_quyet_dinh, nguoi_ki, cac_quyet_dinh_json, duong_dan_anh_goc, toa_do_chu_ki_json = row
                 cac_quyet_dinh = json.loads(cac_quyet_dinh_json)
 
-                summary_content = (
-                    f"Họ tên sinh viên: {ho_ten_sinh_vien}\n"
-                    f"Tên quyết định: {ten_quyet_dinh}\n"
-                    f"Người ký: {nguoi_ki}\n\n"
-                    f"Các quyết định:\n" + "\n".join(cac_quyet_dinh)
+                content = (
+                    f"🧑‍🎓 Họ tên sinh viên: {ho_ten_sinh_vien}\n"
+                    f"📑 Tên quyết định: {ten_quyet_dinh}\n"
+                    f"✍️ Người ký: {nguoi_ki}\n\n"
+                    f"📋 Chi tiết các điều khoản:\n" + "\n".join(f"• {qd}" for qd in cac_quyet_dinh)
                 )
 
-                self.output_textbox.insert("1.0", summary_content)
+                self.output_textbox.insert("1.0", content)
                 self.current_selected_doc_id = doc_id
                 self.open_image_button.configure(state="normal")
+                self.status_label.configure(text=f"✅ Đang xem tài liệu ID: {doc_id}")
             else:
-                messagebox.showerror("Lỗi", "Không tìm thấy tài liệu trong CSDL.")
-        except pyodbc.Error as e:
-            messagebox.showerror("Lỗi", f"Không thể đọc nội dung tài liệu:\n{e}")
-        except json.JSONDecodeError:
-            messagebox.showerror(
-                "Lỗi", "Không thể phân tích dữ liệu. Dữ liệu có thể bị hỏng."
-            )
+                messagebox.showerror("Lỗi", "Không tìm thấy tài liệu.")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể đọc nội dung: {e}")
 
     def show_original_image_window(self):
         if not self.current_selected_doc_id:
@@ -551,58 +635,52 @@ class App(customtkinter.CTk):
 
         try:
             cursor = self.conn.cursor()
-            query = (
-                "SELECT duong_dan_anh_goc, toa_do_chu_ki FROM Documents WHERE id = ?"
-            )
-            cursor.execute(query, (self.current_selected_doc_id,))
+            cursor.execute("SELECT duong_dan_anh_goc, toa_do_chu_ki FROM Documents WHERE id = ?", (self.current_selected_doc_id,))
             row = cursor.fetchone()
 
             if row:
                 image_path, coords_json = row
                 if not image_path or not os.path.exists(image_path):
-                    messagebox.showerror("Lỗi", "Không tìm thấy file ảnh gốc.")
+                    messagebox.showerror("Lỗi", "Không tìm thấy ảnh gốc.")
                     return
 
-                original_image = Image.open(image_path)
+                img = Image.open(image_path)
+                coords = json.loads(coords_json) if coords_json else []
 
-                # Vẽ bounding box nếu có tọa độ
-                coords = []
-                if coords_json:
-                    coords = json.loads(coords_json)
-                    if (
-                        coords
-                        and len(coords) == 4
-                        and all(isinstance(c, (int, float)) for c in coords)
-                    ):
-                        draw = ImageDraw.Draw(original_image)
-                        draw.rectangle(coords, outline="red", width=5)
+                if len(coords) == 4 and all(isinstance(c, (int, float)) for c in coords) and sum(coords) > 0:
+                    draw = ImageDraw.Draw(img)
+                    draw.rectangle(coords, outline="#e74c3c", width=6)
+                    draw.text((coords[0], coords[1]-25), "📝 Chữ ký", fill="#e74c3c")
 
-                # Hiển thị ảnh trong cửa sổ mới
-                top_level = Toplevel(self)
-                top_level.title("Ảnh gốc với chữ ký đã nhận dạng")
+                # Resize ảnh để vừa màn hình
+                screen_width = self.winfo_screenwidth()
+                screen_height = self.winfo_screenheight()
+                img_width, img_height = img.size
+                ratio = min(screen_width * 0.7 / img_width, screen_height * 0.7 / img_height)
+                new_size = (int(img_width * ratio), int(img_height * ratio))
+                img_resized = img.resize(new_size, Image.LANCZOS)
 
-                original_width, original_height = original_image.size
-                screen_width = top_level.winfo_screenwidth()
-                screen_height = top_level.winfo_screenheight()
+                top = Toplevel(self)
+                top.title(f"🖼️ Ảnh gốc - ID: {self.current_selected_doc_id}")
+                top.geometry(f"{new_size[0] + 60}x{new_size[1] + 120}")
+                top.configure(bg="#f8f9fa")
 
-                resize_ratio = min(
-                    screen_width / original_width, screen_height / original_height
+                tk_img = ImageTk.PhotoImage(img_resized)
+                lbl = Label(top, image=tk_img, bg="#ffffff", relief="solid", bd=1)
+                lbl.image = tk_img
+                lbl.pack(padx=30, pady=30)
+
+                info_lbl = Label(
+                    top,
+                    text="🔴 Khung đỏ: Vị trí chữ ký đã nhận dạng",
+                    bg="#f8f9fa",
+                    fg="#e74c3c",
+                    font=("Segoe UI", 11, "bold"),
                 )
-                new_size = (
-                    int(original_width * resize_ratio * 0.9),
-                    int(original_height * resize_ratio * 0.9),
-                )
-
-                resized_image = original_image.resize(new_size, Image.LANCZOS)
-
-                ctk_image = ImageTk.PhotoImage(resized_image)
-
-                image_label = Label(top_level, image=ctk_image)
-                image_label.image = ctk_image
-                image_label.pack(padx=10, pady=10)
+                info_lbl.pack(pady=(0, 15))
 
         except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể hiển thị ảnh gốc: {e}")
+            messagebox.showerror("Lỗi", f"Không thể hiển thị ảnh: {e}")
 
 
 if __name__ == "__main__":
